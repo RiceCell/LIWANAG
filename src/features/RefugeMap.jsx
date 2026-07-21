@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { MapContainer, TileLayer, Marker, ZoomControl, useMapEvents } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, ZoomControl, useMapEvents, GeoJSON } from 'react-leaflet';
 import {
     Search, Zap, PlusSquare, ThermometerSnowflake, Navigation,
-    Plus, X, ShieldCheck, MapPinPlus, TriangleAlert, Check, Loader2
+    Plus, X, ShieldCheck, MapPinPlus, TriangleAlert, Check, Loader2, AlertTriangle
 } from 'lucide-react';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
@@ -24,6 +24,16 @@ const MARKER_GLYPHS = {
     medical: '<path d="M12 5v14M5 12h14"/>',
     cooling: '<path d="M12 2v20M4.2 7l15.6 10M4.2 17l15.6-10"/>',
 };
+
+// 🆕 A custom red warning triangle icon for emergencies
+const emergencyIcon = L.divIcon({
+    html: `<div style="background-color: #ef4444; border: 2px solid white; border-radius: 50%; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 6px rgba(0,0,0,0.3);">
+           <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+         </div>`,
+    className: '', // We leave this empty to prevent default Leaflet styles from messing it up
+    iconSize: [32, 32],
+    iconAnchor: [16, 16]
+});
 
 let pulseStyleInjected = false;
 function ensurePulseKeyframes() {
@@ -92,6 +102,35 @@ export default function RefugeMap() {
     const [selectedRefuge, setSelectedRefuge] = useState(null);
     const [fabOpen, setFabOpen] = useState(false);
     const [activeSheet, setActiveSheet] = useState(null); // 'report' | 'add' | 'added-confirmation' | null
+
+    const [reports, setReports] = useState([]); // 🆕 Active reports state
+    const [geoData, setGeoData] = useState(null); // 🆕 GeoJSON map state
+
+    // 🆕 Fetch the GeoJSON map boundaries
+    useEffect(() => {
+        fetch('/cebu-city.json')
+            .then(response => response.json())
+            .then(data => setGeoData(data))
+            .catch(error => console.error("Error loading barangay map:", error));
+    }, []);
+
+    // 🆕 Fetch active emergencies
+    useEffect(() => {
+        const fetchReports = async () => {
+            const { data, error } = await supabase
+                .from('brownout_reports')
+                .select('*')
+                .eq('status', 'active');
+
+            if (error) {
+                console.error("Failed to fetch reports:", error);
+            } else {
+                setReports(data || []);
+            }
+        };
+
+        fetchReports();
+    }, []);
 
     // Initial load — falls back to whatever was last cached on this phone
     // if the network call fails, which is the whole point of a brownout app.
@@ -224,8 +263,9 @@ export default function RefugeMap() {
                 )}
             </div>
 
-            {/* 2. FLOATING ACTION BUTTON: report + add, the two core citizen actions */}
-            <div className="absolute right-4 bottom-40 z-[400] flex flex-col items-end gap-3">
+            {/* 2. FLOATING ACTION BUTTON: report + add, the two core citizen actions.
+                bottom-60 (not bottom-40) to clear the bottom nav footer added in AppLayout. */}
+            <div className="absolute right-4 bottom-60 z-[400] flex flex-col items-end gap-3">
                 {fabOpen && (
                     <div className="flex flex-col items-end gap-2 animate-in fade-in slide-in-from-bottom-2 duration-200">
                         <button
@@ -257,8 +297,9 @@ export default function RefugeMap() {
                 </button>
             </div>
 
-            {/* 3. BOTTOM OVERLAY: Available Services Filters */}
-            <div className="absolute bottom-6 left-0 right-0 z-[400] px-4 pointer-events-none">
+            {/* 3. BOTTOM OVERLAY: Available Services Filters.
+                bottom-24 (not bottom-6) to clear the bottom nav footer added in AppLayout. */}
+            <div className="absolute bottom-24 left-0 right-0 z-[400] px-4 pointer-events-none">
                 <div className="pointer-events-auto bg-white rounded-3xl shadow-xl p-4 border border-slate-100">
                     <h4 className="text-xs font-bold text-slate-800 mb-3 ml-1">Available Services</h4>
                     <div className="flex justify-between gap-2">
@@ -295,6 +336,16 @@ export default function RefugeMap() {
                 </div>
             </div>
 
+            {/* 🆕 REPORT BUTTON GOES HERE: OUTSIDE THE MAP CONTAINER */}
+            <div className="absolute top-24 right-4 z-[400] pointer-events-auto">
+                <button
+                    onClick={() => window.dispatchEvent(new CustomEvent('open-report'))}
+                    className="bg-red-500 text-white p-3 rounded-full shadow-lg shadow-red-500/30 hover:bg-red-600 active:scale-95 transition-all flex items-center justify-center"
+                >
+                    <AlertTriangle size={24} />
+                </button>
+            </div>
+
             {/* 4. THE LEAFLET MAP */}
             <MapContainer
                 center={DEFAULT_CENTER}
@@ -307,15 +358,44 @@ export default function RefugeMap() {
                     attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
                     url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                 />
+
+                {/* 🆕 THE GEOJSON BOUNDARIES */}
+                {geoData && (
+                    <GeoJSON
+                        data={geoData}
+                        style={{
+                            color: '#3b82f6',
+                            weight: 2,
+                            fillColor: '#93c5fd',
+                            fillOpacity: 0.1
+                        }}
+                    />
+                )}
+
                 <ZoomControl position="bottomright" />
                 <MapClickCatcher onMapClick={closeAllSheets} />
 
+                {/* Existing Evacuation Centers */}
                 {filteredRefuges.map((point) => (
                     <Marker
                         key={point.id}
                         position={[point.lat, point.lng]}
                         icon={buildIcon(point)}
                         eventHandlers={{ click: () => setSelectedRefuge(point) }}
+                    />
+                ))}
+
+                {/* 🆕 New Brownout / Emergency Reports */}
+                {reports.map((report) => (
+                    <Marker
+                        key={report.id}
+                        position={[report.lat, report.lng]}
+                        icon={emergencyIcon}
+                        eventHandlers={{
+                            click: () => {
+                                alert(`Emergency reported at ${report.purok}! \nNotes: ${report.notes || 'None'}`);
+                            }
+                        }}
                     />
                 ))}
             </MapContainer>
