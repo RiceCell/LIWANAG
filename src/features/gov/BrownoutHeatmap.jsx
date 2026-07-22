@@ -1,32 +1,38 @@
 import React, { useMemo } from 'react';
-import { PUROKS, extractPurok } from './purokUtils';
+import { PUROKS, normalizePurok } from './purokUtils';
 
+// `reports` is `brownout_reports`. Unlike the old `outage_reports` (which
+// had explicit 'onset'/'restored' kinds you could pair up to get a real
+// duration), brownout_reports has no resolution mechanism yet — every row
+// ReportBrownout.jsx inserts comes in as `status: 'active'` and nothing in
+// the app ever changes it. So "hours" below means "how long since the
+// oldest still-active report in this purok was filed," not a true
+// onset→restored duration. Once officials have a way to mark a report
+// resolved (e.g. a button in this console flipping status to 'resolved'),
+// this can go back to computing a real elapsed duration between the two.
 export default function BrownoutHeatmap({ reports }) {
     const cells = useMemo(() => {
         const byPurok = {};
         PUROKS.forEach((p) => { byPurok[p] = []; });
         reports.forEach((r) => {
-            const p = extractPurok(r.street);
+            const p = normalizePurok(r.purok);
             if (byPurok[p]) byPurok[p].push(r);
         });
 
         return PUROKS.map((purok) => {
-            // Oldest-first within the purok so we can walk onset → restored pairs.
-            const list = byPurok[purok].slice().sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-            const last = list[list.length - 1];
+            const list = byPurok[purok];
+            const activeReports = list.filter((r) => r.status === 'active');
             let status = 'clear';
             let hours = 0;
 
-            if (last) {
-                if (last.kind === 'onset') {
-                    status = 'ongoing';
-                    hours = (Date.now() - new Date(last.created_at).getTime()) / 3600000;
-                } else {
-                    status = 'recovered';
-                    const onset = list[list.length - 2];
-                    hours = onset ? (new Date(last.created_at) - new Date(onset.created_at)) / 3600000 : 0;
-                }
+            if (activeReports.length > 0) {
+                status = 'ongoing';
+                const oldest = activeReports.reduce((a, b) =>
+                    new Date(a.created_at) < new Date(b.created_at) ? a : b
+                );
+                hours = (Date.now() - new Date(oldest.created_at).getTime()) / 3600000;
             }
+
             return { purok, status, hours, reportCount: list.length };
         });
     }, [reports]);
@@ -38,13 +44,15 @@ export default function BrownoutHeatmap({ reports }) {
         return { text: 'text-emerald-600', bg: 'bg-emerald-50', border: 'border-emerald-100' };
     };
 
-    const chronic = cells.filter((c) => c.status === 'ongoing' || c.hours > 4);
+    const chronic = cells.filter((c) => c.status === 'ongoing' && c.hours > 4);
 
     return (
         <div>
             <header className="mb-6">
                 <h2 className="text-xl font-extrabold text-slate-800">Brownout heatmap</h2>
-                <p className="text-sm text-slate-500 mt-1">Outage duration by purok, built from citizen reports — the pattern your utility bill never shows.</p>
+                <p className="text-sm text-slate-500 mt-1">
+                    Active emergency reports by purok, from citizens using the Report an Outage flow — the pattern your utility bill never shows.
+                </p>
             </header>
 
             <div className="grid grid-cols-4 sm:grid-cols-7 gap-3 mb-6">
@@ -57,7 +65,7 @@ export default function BrownoutHeatmap({ reports }) {
                                 {cell.status === 'clear' ? '—' : `${cell.hours.toFixed(1)}h`}
                             </p>
                             <p className="text-[10px] text-slate-400 mt-1">
-                                {cell.status === 'ongoing' ? 'ongoing' : cell.status === 'clear' ? 'no reports' : 'last outage'}
+                                {cell.status === 'ongoing' ? 'ongoing' : 'no reports'}
                             </p>
                         </div>
                     );
@@ -67,14 +75,14 @@ export default function BrownoutHeatmap({ reports }) {
             <div className="flex flex-wrap items-center gap-4 text-xs text-slate-500 bg-white border border-slate-100 rounded-2xl px-4 py-3 mb-6">
                 <span className="flex items-center gap-1.5"><i className="w-2.5 h-2.5 rounded-full bg-emerald-400 inline-block" /> Under 1h</span>
                 <span className="flex items-center gap-1.5"><i className="w-2.5 h-2.5 rounded-full bg-amber-400 inline-block" /> 1–4h</span>
-                <span className="flex items-center gap-1.5"><i className="w-2.5 h-2.5 rounded-full bg-red-400 inline-block" /> Over 4h or still ongoing</span>
+                <span className="flex items-center gap-1.5"><i className="w-2.5 h-2.5 rounded-full bg-red-400 inline-block" /> Over 4h, still active</span>
             </div>
 
             {chronic.length > 0 && (
                 <div className="bg-white border border-slate-100 rounded-2xl shadow-sm p-5">
                     <h3 className="text-sm font-bold text-slate-700 mb-1.5">Infrastructure note</h3>
                     <p className="text-sm text-slate-500 leading-relaxed">
-                        {chronic.map((c) => c.purok).join(' and ')} {chronic.length === 1 ? 'is' : 'are'} showing outages over 4 hours.
+                        {chronic.map((c) => c.purok).join(' and ')} {chronic.length === 1 ? 'has' : 'have'} an active report open more than 4 hours.
                         This is the kind of pattern that supports a generator deployment request to the DILG regional office.
                     </p>
                 </div>

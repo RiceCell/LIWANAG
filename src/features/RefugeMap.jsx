@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { MapContainer, TileLayer, Marker, ZoomControl, useMapEvents, GeoJSON } from 'react-leaflet';
 import {
     Search, Zap, PlusSquare, ThermometerSnowflake, Navigation,
-    Plus, X, ShieldCheck, MapPinPlus, TriangleAlert, Check, Loader2, AlertTriangle
+    Plus, X, ShieldCheck, MapPinPlus, TriangleAlert, Check, Loader2
 } from 'lucide-react';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
@@ -101,7 +101,7 @@ export default function RefugeMap() {
     const [searchQuery, setSearchQuery] = useState('');
     const [selectedRefuge, setSelectedRefuge] = useState(null);
     const [fabOpen, setFabOpen] = useState(false);
-    const [activeSheet, setActiveSheet] = useState(null); // 'report' | 'add' | 'added-confirmation' | null
+    const [activeSheet, setActiveSheet] = useState(null); // 'add' | 'added-confirmation' | null
 
     const [reports, setReports] = useState([]); // 🆕 Active reports state
     const [geoData, setGeoData] = useState(null); // 🆕 GeoJSON map state
@@ -208,15 +208,11 @@ export default function RefugeMap() {
         setActiveSheet('added-confirmation');
     };
 
-    const handleReportOutage = async ({ street, kind }) => {
-        const { data: { user } } = await supabase.auth.getUser();
-        const { error } = await supabase.from('outage_reports').insert({
-            street,
-            kind,
-            reported_by: user?.id ?? null,
-        });
-        if (error) throw error;
-    };
+    // NOTE: outage reporting used to go through a handleReportOutage()
+    // function here that inserted into the legacy `outage_reports` table via
+    // a bottom sheet. "Report an outage" now launches the full-screen
+    // ReportBrownout flow instead (writes to `brownout_reports` directly),
+    // so that function and its sheet were removed rather than left unused.
 
     return (
         <div className="w-full h-full relative">
@@ -269,11 +265,18 @@ export default function RefugeMap() {
                 {fabOpen && (
                     <div className="flex flex-col items-end gap-2 animate-in fade-in slide-in-from-bottom-2 duration-200">
                         <button
-                            onClick={() => { setActiveSheet('report'); setFabOpen(false); }}
+                            onClick={() => {
+                                // This used to open a bottom-sheet form posting to the
+                                // legacy `outage_reports` table. It now launches the
+                                // full-screen, GPS-based ReportBrownout flow instead —
+                                // same custom event the old standalone red button used.
+                                setFabOpen(false);
+                                window.dispatchEvent(new CustomEvent('open-report'));
+                            }}
                             className="flex items-center gap-2 bg-white shadow-lg rounded-full pl-4 pr-2 py-2 text-sm font-semibold text-slate-700 border border-slate-100"
                         >
                             Report an outage
-                            <span className="w-9 h-9 rounded-full bg-amber-100 text-amber-600 flex items-center justify-center">
+                            <span className="w-9 h-9 rounded-full bg-red-100 text-red-600 flex items-center justify-center">
                                 <TriangleAlert size={16} />
                             </span>
                         </button>
@@ -336,16 +339,6 @@ export default function RefugeMap() {
                 </div>
             </div>
 
-            {/* 🆕 REPORT BUTTON GOES HERE: OUTSIDE THE MAP CONTAINER */}
-            <div className="absolute top-24 right-4 z-[400] pointer-events-auto">
-                <button
-                    onClick={() => window.dispatchEvent(new CustomEvent('open-report'))}
-                    className="bg-red-500 text-white p-3 rounded-full shadow-lg shadow-red-500/30 hover:bg-red-600 active:scale-95 transition-all flex items-center justify-center"
-                >
-                    <AlertTriangle size={24} />
-                </button>
-            </div>
-
             {/* 4. THE LEAFLET MAP */}
             <MapContainer
                 center={DEFAULT_CENTER}
@@ -403,9 +396,6 @@ export default function RefugeMap() {
             {/* 5. BOTTOM SHEETS */}
             {selectedRefuge && (
                 <RefugeDetailSheet refuge={selectedRefuge} onClose={closeAllSheets} />
-            )}
-            {activeSheet === 'report' && (
-                <ReportOutageSheet onClose={closeAllSheets} onSubmit={handleReportOutage} />
             )}
             {activeSheet === 'add' && (
                 <AddRefugeSheet onClose={closeAllSheets} onSubmit={handleAddRefuge} />
@@ -488,83 +478,6 @@ function RefugeDetailSheet({ refuge, onClose }) {
     );
 }
 
-function ReportOutageSheet({ onClose, onSubmit }) {
-    const [submitted, setSubmitted] = useState(false);
-    const [street, setStreet] = useState('');
-    const [kind, setKind] = useState('onset');
-    const [submitting, setSubmitting] = useState(false);
-    const [error, setError] = useState(null);
-
-    if (submitted) {
-        return (
-            <ConfirmationSheet
-                message="Report sent. This helps your barangay see exactly where and how long the brownout is lasting."
-                onClose={onClose}
-            />
-        );
-    }
-
-    const handleSubmit = async () => {
-        setSubmitting(true);
-        setError(null);
-        try {
-            await onSubmit({ street: street.trim(), kind });
-            setSubmitted(true);
-        } catch (err) {
-            setError("Couldn't send that report — check your connection and try again.");
-        } finally {
-            setSubmitting(false);
-        }
-    };
-
-    return (
-        <SheetShell onClose={onClose}>
-            <div className="flex items-start justify-between mb-4">
-                <h3 className="text-lg font-extrabold text-slate-800">Report Brownout Status</h3>
-                <button onClick={onClose} aria-label="Close" className="text-slate-300 hover:text-slate-500 shrink-0">
-                    <X size={20} />
-                </button>
-            </div>
-
-            <div className="flex gap-2 mb-4">
-                <button
-                    onClick={() => setKind('onset')}
-                    className={`flex-1 py-3 rounded-2xl text-sm font-bold border-2 transition-all ${kind === 'onset' ? 'bg-amber-50 border-amber-400 text-amber-700' : 'bg-slate-50 border-transparent text-slate-400'}`}
-                >
-                    Power just went out
-                </button>
-                <button
-                    onClick={() => setKind('restored')}
-                    className={`flex-1 py-3 rounded-2xl text-sm font-bold border-2 transition-all ${kind === 'restored' ? 'bg-emerald-50 border-emerald-400 text-emerald-700' : 'bg-slate-50 border-transparent text-slate-400'}`}
-                >
-                    Power is back
-                </button>
-            </div>
-
-            <label htmlFor="street" className="block text-xs font-bold text-slate-700 uppercase tracking-wide mb-1.5 ml-1">
-                Street or Purok
-            </label>
-            <input
-                id="street"
-                value={street}
-                onChange={(e) => setStreet(e.target.value)}
-                placeholder="e.g. Purok 2, Zapatera St."
-                className="w-full bg-slate-50 border border-slate-200 text-slate-800 rounded-2xl py-3 px-4 mb-3 focus:outline-none focus:ring-2 focus:ring-brand-500"
-            />
-
-            {error && <p className="text-xs text-red-600 font-medium mb-3">{error}</p>}
-
-            <button
-                onClick={handleSubmit}
-                disabled={!street.trim() || submitting}
-                className="w-full bg-brand-500 hover:bg-brand-900 disabled:opacity-50 text-white font-bold py-3.5 rounded-2xl transition-all flex items-center justify-center gap-2"
-            >
-                {submitting && <Loader2 size={18} className="animate-spin" />}
-                Submit Report
-            </button>
-        </SheetShell>
-    );
-}
 
 function AddRefugeSheet({ onClose, onSubmit }) {
     const [name, setName] = useState('');

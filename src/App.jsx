@@ -5,15 +5,17 @@ import AuthPage from './features/AuthPage';
 import ProfilePage from './features/ProfilePage';
 import AlertsPage from './features/AlertsPage';
 import GovConsole from './features/gov/GovConsole';
-import { ReportBrownout } from './features/ReportBrownout'; // 🆕 Added import
+import { ReportBrownout } from './features/ReportBrownout';
 import AppLayout from './layouts/AppLayout';
 import { useAuth } from './hooks/useAuth';
+import { useIsStaff } from './hooks/useIsStaff';
 
 const TAB_VIEWS = ['map', 'alerts', 'profile'];
 
 export default function App() {
   const [currentView, setCurrentView] = useState('landing');
   const { session, loading } = useAuth();
+  const { isStaff, loading: staffLoading } = useIsStaff();
 
   const handleGetStarted = () => {
     setCurrentView(session ? 'map' : 'auth');
@@ -23,13 +25,13 @@ export default function App() {
   // expired token), send them back to landing instead of leaving them
   // stuck on a screen that assumes they're logged in.
   useEffect(() => {
-    // 🆕 Added 'report' to the list of protected views
     if (!loading && !session && (TAB_VIEWS.includes(currentView) || currentView === 'gov' || currentView === 'report')) {
       setCurrentView('landing');
     }
   }, [session, loading, currentView]);
 
-  // 🆕 Listen for the custom event we added to the red map button
+  // Listen for the custom event the map's FAB fires to launch the
+  // full-screen brownout report flow.
   useEffect(() => {
     const handleOpenReport = () => setCurrentView('report');
     window.addEventListener('open-report', handleOpenReport);
@@ -63,14 +65,13 @@ export default function App() {
           return null;
         }
         return (
-          <AppLayout onNavigate={setCurrentView} activeView={currentView}>
+          <AppLayout onNavigate={setCurrentView} activeView={currentView} isStaff={isStaff}>
             {currentView === 'map' && <RefugeMap />}
             {currentView === 'alerts' && <AlertsPage />}
-            {currentView === 'profile' && <ProfilePage />}
+            {currentView === 'profile' && <ProfilePage isStaff={isStaff} onNavigate={setCurrentView} />}
           </AppLayout>
         );
 
-      // 🆕 Added the Report routing block (renders full screen, no tabs)
       case 'report':
         if (!session) {
           setCurrentView('auth');
@@ -83,9 +84,23 @@ export default function App() {
           setCurrentView('auth');
           return null;
         }
-        // TODO: gate this behind an actual role check (user_metadata.role,
-        // or a staff table + RLS) before this ever ships — right now any
-        // signed-in account can reach it.
+        // Wait for the staff check to resolve before deciding anything —
+        // otherwise a legitimate official would get bounced to 'map' for a
+        // frame or two every time this loads, since `isStaff` starts false.
+        if (staffLoading) {
+          return (
+            <div className="h-full flex items-center justify-center bg-slate-50 text-brand-500 font-bold">
+              Checking access...
+            </div>
+          );
+        }
+        // The actual security boundary is RLS (see the migration) — this
+        // redirect just stops a normal user from sitting on a screen that's
+        // going to fail every write they try anyway.
+        if (!isStaff) {
+          setCurrentView('map');
+          return null;
+        }
         return <GovConsole onExit={() => setCurrentView('map')} />;
       default:
         return <LandingPage onGetStarted={handleGetStarted} />;
@@ -93,8 +108,11 @@ export default function App() {
   };
 
   // The LGU console is a desktop dashboard, not a phone screen, so it skips
-  // the device-frame treatment entirely and renders full-bleed.
-  const isGovView = currentView === 'gov';
+  // the device-frame treatment entirely and renders full-bleed. Only do
+  // this once we've actually confirmed staff status — otherwise a non-staff
+  // user (or a legitimate official whose check hasn't resolved yet) would
+  // briefly get the full-bleed frame around an empty/redirecting screen.
+  const isGovView = currentView === 'gov' && isStaff && !staffLoading;
 
   if (isGovView) {
     return <div className="min-h-screen w-full bg-slate-50">{renderView()}</div>;

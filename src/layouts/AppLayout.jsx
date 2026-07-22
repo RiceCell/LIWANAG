@@ -7,8 +7,10 @@ import { useAuth } from '../hooks/useAuth';
 
 // `onNavigate`/`activeView` are optional so this layout still works anywhere
 // it doesn't need tab switching — it just won't render the menu items or
-// footer that depend on them.
-export default function AppLayout({ children, onNavigate, activeView }) {
+// footer that depend on them. `isStaff` gates the LGU Console link; treat
+// it as a UI convenience, not the real access control (that's RLS — see
+// supabase/migrations/20260722_barangay_staff_and_rls.sql).
+export default function AppLayout({ children, onNavigate, activeView, isStaff }) {
     const isOffline = useOfflineStatus();
     const { signOut } = useAuth();
     const [menuOpen, setMenuOpen] = useState(false);
@@ -37,7 +39,7 @@ export default function AppLayout({ children, onNavigate, activeView }) {
                 </button>
                 {menuOpen && (
                     <div className="absolute right-0 mt-2 w-52 bg-white rounded-2xl shadow-xl border border-slate-100 p-1.5 animate-in fade-in slide-in-from-top-1 duration-150">
-                        {onNavigate && (
+                        {onNavigate && isStaff && (
                             <button
                                 onClick={() => goTo('gov')}
                                 className="w-full flex items-center gap-2 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-600 hover:bg-slate-50"

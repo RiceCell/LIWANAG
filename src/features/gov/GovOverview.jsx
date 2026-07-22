@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts';
-import { Zap, ShieldCheck, PlusSquare, TriangleAlert } from 'lucide-react';
-import { PUROKS, extractPurok } from './purokUtils';
+import { ShieldCheck, PlusSquare, TriangleAlert } from 'lucide-react';
+import { PUROKS, normalizePurok } from './purokUtils';
 
 function StatCard({ label, value, hint }) {
     return (
@@ -23,19 +23,24 @@ function relativeTime(dateStr) {
     return `${Math.round(hrs / 24)}d ago`;
 }
 
+// `reports` here is `brownout_reports` (structured `purok`, real GPS via
+// ReportBrownout.jsx, `status` defaulting to 'active'). It replaced the
+// legacy `outage_reports` (free-text street, onset/restored `kind`) as the
+// data source for this screen. Note: brownout_reports currently has no way
+// to mark a report resolved — everything inserted comes in as 'active' and
+// stays that way, so "active now" below really means "ever reported and
+// never explicitly cleared." Revisit once officials have a way to resolve
+// a report from the console.
 export default function GovOverview({ refuges, reports, loading }) {
     const verifiedCount = refuges.filter((r) => r.verified).length;
     const pendingCount = refuges.length - verifiedCount;
 
-    // A purok's *latest* report tells us whether it's currently out — this
-    // assumes `reports` arrives newest-first, which is how GovConsole fetches it.
     const activePuroks = useMemo(() => {
-        const latest = new Map();
+        const puroks = new Set();
         reports.forEach((r) => {
-            const p = extractPurok(r.street);
-            if (!latest.has(p)) latest.set(p, r.kind);
+            if (r.status === 'active') puroks.add(normalizePurok(r.purok));
         });
-        return [...latest.entries()].filter(([, kind]) => kind === 'onset').map(([p]) => p);
+        return [...puroks];
     }, [reports]);
 
     const reportsToday = reports.filter((r) => Date.now() - new Date(r.created_at).getTime() < 24 * 60 * 60 * 1000).length;
@@ -43,7 +48,7 @@ export default function GovOverview({ refuges, reports, loading }) {
     const chartData = useMemo(() => {
         const counts = Object.fromEntries(PUROKS.map((p) => [p, 0]));
         reports.forEach((r) => {
-            const p = extractPurok(r.street);
+            const p = normalizePurok(r.purok);
             if (counts[p] !== undefined) counts[p] += 1;
         });
         return PUROKS.map((p) => ({ purok: p.replace('Purok ', 'P'), reports: counts[p] }));
@@ -57,11 +62,14 @@ export default function GovOverview({ refuges, reports, loading }) {
             text: r.verified ? `"${r.name}" certified as a refuge point` : `"${r.name}" submitted for verification`,
             when: r.created_at,
         }));
+        // Every brownout_reports row is currently a fresh emergency report
+        // (there's no "restored" counterpart yet), so this always reads as
+        // a report rather than branching on a kind that doesn't exist here.
         const reportEvents = reports.slice(0, 5).map((r) => ({
             id: `report-${r.id}`,
-            icon: r.kind === 'onset' ? TriangleAlert : Zap,
-            color: r.kind === 'onset' ? 'text-red-500' : 'text-emerald-500',
-            text: r.kind === 'onset' ? `Brownout reported — ${r.street || 'unspecified street'}` : `Power restored — ${r.street || 'unspecified street'}`,
+            icon: TriangleAlert,
+            color: 'text-red-500',
+            text: `Brownout reported — ${r.purok || 'Unspecified purok'}${r.street ? `, ${r.street}` : ''}`,
             when: r.created_at,
         }));
         return [...refugeEvents, ...reportEvents]
@@ -79,7 +87,7 @@ export default function GovOverview({ refuges, reports, loading }) {
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
                 <StatCard label="Brownouts active now" value={loading ? '—' : activePuroks.length} hint={activePuroks.length ? activePuroks.join(', ') : 'No open reports'} />
                 <StatCard label="Refuge points online" value={loading ? '—' : `${verifiedCount}/${refuges.length}`} hint={`${pendingCount} pending review`} />
-                <StatCard label="Reports today" value={loading ? '—' : reportsToday} hint="Onset + restoration" />
+                <StatCard label="Reports today" value={loading ? '—' : reportsToday} hint="Citizen emergency reports" />
                 <StatCard label="Puroks covered" value={PUROKS.length} hint="Barangay San Isidro" />
             </div>
 

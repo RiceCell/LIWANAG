@@ -19,7 +19,7 @@ const TABS = [
 // exposed to real users, since it surfaces every household's outage
 // activity and controls what gets broadcast barangay-wide. The plan is a
 // `role` claim in user_metadata (or a `staff` table) checked here AND
-// enforced with RLS on refuge_points/outage_reports/broadcasts, so a
+// enforced with RLS on refuge_points/brownout_reports/broadcasts, so a
 // citizen account can never read this data even by hitting the API directly.
 export default function GovConsole({ onExit }) {
     const { session, signOut } = useAuth();
@@ -35,7 +35,11 @@ export default function GovConsole({ onExit }) {
         (async () => {
             const [refugeRes, reportRes, broadcastRes] = await Promise.all([
                 supabase.from('refuge_points').select('*').order('created_at', { ascending: false }),
-                supabase.from('outage_reports').select('*').order('created_at', { ascending: false }).limit(200),
+                // Reads from `brownout_reports` now (structured purok + real GPS,
+                // written by the citizen ReportBrownout flow) instead of the
+                // legacy `outage_reports` (free-text street, no longer written
+                // to by anything in the app — see purokUtils.js for context).
+                supabase.from('brownout_reports').select('*').order('created_at', { ascending: false }).limit(200),
                 supabase.from('broadcasts').select('*').order('created_at', { ascending: false }).limit(50),
             ]);
             if (ignore) return;
@@ -64,7 +68,7 @@ export default function GovConsole({ onExit }) {
                     return prev;
                 });
             })
-            .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'outage_reports' }, (payload) => {
+            .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'brownout_reports' }, (payload) => {
                 setReports((prev) => [payload.new, ...prev]);
             })
             .subscribe();

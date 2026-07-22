@@ -1,5 +1,5 @@
 import React from 'react';
-import { WifiOff, Globe2, ShieldCheck, Info, ChevronRight, LogOut, MapPin } from 'lucide-react';
+import { WifiOff, Globe2, ShieldCheck, Info, ChevronRight, LogOut, MapPin, RadioTower } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { useOfflineStatus } from '../hooks/useOfflineStatus';
 
@@ -24,7 +24,11 @@ const SETTINGS = [
     { key: 'about', icon: Info, label: 'About LIWANAG', hint: 'v0.1 — built for Barangay San Isidro' },
 ];
 
-export default function ProfilePage() {
+// `isStaff`/`onNavigate` are optional — without them, this screen just
+// doesn't show the LGU Console entry at all, which is the safe default.
+// `isStaff` is a UI convenience, not the real access control; that's RLS
+// (see supabase/migrations/20260722_barangay_staff_and_rls.sql).
+export default function ProfilePage({ isStaff, onNavigate }) {
     const { session, signOut } = useAuth();
     const isOffline = useOfflineStatus();
 
@@ -53,6 +57,23 @@ export default function ProfilePage() {
                     <WifiOff size={16} className="shrink-0 mt-0.5" />
                     <span>You're offline. Some settings need a connection to update.</span>
                 </div>
+            )}
+
+            {/* Only rendered at all for confirmed barangay staff — a normal
+                user never sees this element exist, not even hidden in the DOM. */}
+            {isStaff && (
+                <button
+                    type="button"
+                    onClick={() => onNavigate?.('gov')}
+                    className="w-full flex items-center gap-3 bg-brand-50 border border-blue-100 rounded-2xl px-4 py-3.5 text-left mb-5 hover:bg-blue-100/50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+                >
+                    <RadioTower size={18} className="text-brand-500 shrink-0" />
+                    <span className="flex-1 min-w-0">
+                        <span className="block text-sm font-bold text-brand-700">LGU Console</span>
+                        <span className="block text-xs text-brand-500/80 mt-0.5">Barangay staff tools</span>
+                    </span>
+                    <ChevronRight size={16} className="text-brand-300 shrink-0" />
+                </button>
             )}
 
             <div className="space-y-2">
