@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
+import { getBarangayFromCoords, extractBarangayNames } from '../lib/geoUtils';
 import { MapPin, ArrowLeft, Loader2, AlertTriangle } from 'lucide-react';
 
 export function ReportBrownout({ onBack }) {
@@ -12,6 +13,42 @@ export function ReportBrownout({ onBack }) {
         lat: null,
         lng: null
     });
+
+    const [geoData, setGeoData] = useState(null);
+    const [barangayList, setBarangayList] = useState([]);
+    const [selectedBarangay, setSelectedBarangay] = useState('');
+
+    // Fetch the same barangay boundaries RefugeMap.jsx uses, so this
+    // dropdown offers exactly the barangays that exist in the GeoJSON —
+    // nothing hardcoded, nothing that can drift out of sync with the map.
+    useEffect(() => {
+        fetch('/cebu-city.json')
+            .then((res) => res.json())
+            .then((data) => {
+                setGeoData(data);
+                setBarangayList(extractBarangayNames(data));
+            })
+            .catch((err) => console.error('Error loading barangay list:', err));
+    }, []);
+
+    // Once both the boundaries and a GPS pin exist, this is "what barangay
+    // does the pinned point actually fall inside" — the automated half of
+    // automated-detection-plus-manual-selection. It only *suggests*; the
+    // dropdown below is always the actual source of truth for the submit.
+    const detectedBarangay = useMemo(() => {
+        if (!geoData || formData.lat == null || formData.lng == null) return null;
+        return getBarangayFromCoords(formData.lat, formData.lng, geoData);
+    }, [geoData, formData.lat, formData.lng]);
+
+    // Auto-fill the dropdown from GPS the first time a location gets
+    // pinned, but only if the person hasn't already picked something —
+    // never silently override a manual choice.
+    useEffect(() => {
+        if (detectedBarangay && detectedBarangay !== 'Outside Cebu City' && !selectedBarangay) {
+            setSelectedBarangay(detectedBarangay);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [detectedBarangay]);
 
     // Automatically fetch the user's location when they click this button
     const handleGetLocation = () => {
@@ -67,6 +104,7 @@ export function ReportBrownout({ onBack }) {
                 .insert([
                     {
                         purok: formData.purok,
+                        barangay: selectedBarangay,
                         street: formData.street,
                         notes: formData.notes,
                         lat: formData.lat,
@@ -150,6 +188,38 @@ export function ReportBrownout({ onBack }) {
                         />
                     </div>
 
+                    {/* Barangay Select (Required) — options come straight from
+                        cebu-city.json, auto-suggested once a GPS pin lands but
+                        always overridable here. */}
+                    <div>
+                        <label className="block text-xs font-bold text-slate-700 uppercase tracking-wide mb-2 ml-1">
+                            Barangay *
+                        </label>
+                        <select
+                            required
+                            value={selectedBarangay}
+                            onChange={(e) => setSelectedBarangay(e.target.value)}
+                            className="w-full bg-white border border-slate-200 text-slate-800 rounded-2xl py-3 px-4 focus:ring-2 focus:ring-brand-500 outline-none transition-all shadow-sm"
+                        >
+                            <option value="" disabled>
+                                {barangayList.length === 0 ? 'Loading barangays…' : 'Select your barangay'}
+                            </option>
+                            {barangayList.map((name) => (
+                                <option key={name} value={name}>{name}</option>
+                            ))}
+                        </select>
+                        {formData.lat != null && detectedBarangay && (
+                            <p className={`text-[10px] mt-1.5 ml-1 font-medium ${detectedBarangay === selectedBarangay ? 'text-emerald-600' : 'text-amber-600'
+                                }`}>
+                                {detectedBarangay === selectedBarangay
+                                    ? 'Matches your pinned location ✓'
+                                    : detectedBarangay === 'Outside Cebu City'
+                                        ? "Your pinned location doesn't match any barangay on file — double check the pin."
+                                        : `Your pinned location looks like ${detectedBarangay} — double check your selection.`}
+                            </p>
+                        )}
+                    </div>
+
                     {/* Street Input (Optional) */}
                     <div>
                         <label className="block text-xs font-bold text-slate-700 uppercase tracking-wide mb-2 ml-1">
@@ -181,7 +251,7 @@ export function ReportBrownout({ onBack }) {
                     {/* Submit Button */}
                     <button
                         type="submit"
-                        disabled={loading || !formData.purok}
+                        disabled={loading || !formData.purok || !selectedBarangay}
                         className="w-full bg-red-500 hover:bg-red-600 text-white font-bold text-lg py-4 rounded-2xl shadow-lg shadow-red-500/30 transition-all flex justify-center items-center gap-2 mt-4 disabled:opacity-50 disabled:shadow-none"
                     >
                         {loading ? <Loader2 size={24} className="animate-spin" /> : <AlertTriangle size={24} />}

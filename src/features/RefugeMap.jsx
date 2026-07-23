@@ -7,6 +7,7 @@ import {
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import { supabase } from '../lib/supabase';
+import { getBarangayFromCoords } from '../lib/geoUtils';
 
 const CACHE_KEY = 'liwanag-refuges-cache';
 const DEFAULT_CENTER = [10.3157, 123.8854];
@@ -105,6 +106,7 @@ export default function RefugeMap() {
 
     const [reports, setReports] = useState([]); // 🆕 Active reports state
     const [geoData, setGeoData] = useState(null); // 🆕 GeoJSON map state
+    const [currentBarangay, setCurrentBarangay] = useState('Locating...');
 
     // 🆕 Fetch the GeoJSON map boundaries
     useEffect(() => {
@@ -113,6 +115,18 @@ export default function RefugeMap() {
             .then(data => setGeoData(data))
             .catch(error => console.error("Error loading barangay map:", error));
     }, []);
+
+    // Once the boundaries are in, figure out which barangay the user's
+    // position falls inside. This uses DEFAULT_CENTER for now, same as the
+    // rest of the map's "current position" — swap the second/third args
+    // here for real GPS coordinates once RefugeMap tracks navigator
+    // .geolocation itself (see the note on ReportBrownout.jsx already doing
+    // this for its own flow).
+    useEffect(() => {
+        if (!geoData) return;
+        const barangay = getBarangayFromCoords(DEFAULT_CENTER[0], DEFAULT_CENTER[1], geoData);
+        setCurrentBarangay(barangay);
+    }, [geoData]);
 
     // 🆕 Fetch active emergencies
     useEffect(() => {
@@ -238,7 +252,7 @@ export default function RefugeMap() {
                 <div className="pointer-events-auto bg-white/90 backdrop-blur-sm rounded-xl shadow-md p-3 border border-slate-100 w-2/3 max-w-xs">
                     <p className="text-[10px] text-slate-500 font-bold tracking-wider uppercase mb-1">Current Position</p>
                     <p className="text-sm font-semibold text-slate-800 flex items-center gap-1">
-                        <Navigation size={14} className="text-blue-500" /> Purok 1, Cebu City
+                        <Navigation size={14} className="text-blue-500" /> {currentBarangay}
                     </p>
                     <hr className="my-2 border-slate-200" />
                     <p className="text-xs font-medium text-slate-600">
