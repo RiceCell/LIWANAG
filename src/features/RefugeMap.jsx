@@ -107,6 +107,7 @@ export default function RefugeMap() {
     const [reports, setReports] = useState([]); // 🆕 Active reports state
     const [geoData, setGeoData] = useState(null); // 🆕 GeoJSON map state
     const [currentBarangay, setCurrentBarangay] = useState('Locating...');
+    const [userPosition, setUserPosition] = useState(null); // real GPS, once resolved
 
     // 🆕 Fetch the GeoJSON map boundaries
     useEffect(() => {
@@ -116,17 +117,38 @@ export default function RefugeMap() {
             .catch(error => console.error("Error loading barangay map:", error));
     }, []);
 
+    // Try to get the device's real location once, so "Current Position"
+    // reflects where the person actually is instead of a fixed demo point.
+    // This is a nice-to-have status display, not a blocking requirement
+    // (unlike ReportBrownout.jsx's pin, which the person has to explicitly
+    // tap for) — if permission is denied or geolocation isn't available,
+    // this just silently leaves userPosition null and the barangay-detection
+    // effect below falls back to DEFAULT_CENTER instead.
+    useEffect(() => {
+        if (!navigator.geolocation) return;
+        navigator.geolocation.getCurrentPosition(
+            (position) => {
+                setUserPosition({ lat: position.coords.latitude, lng: position.coords.longitude });
+            },
+            (error) => {
+                console.warn('RefugeMap: falling back to default center —', error.message);
+            },
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+        );
+    }, []);
+
     // Once the boundaries are in, figure out which barangay the user's
-    // position falls inside. This uses DEFAULT_CENTER for now, same as the
-    // rest of the map's "current position" — swap the second/third args
-    // here for real GPS coordinates once RefugeMap tracks navigator
-    // .geolocation itself (see the note on ReportBrownout.jsx already doing
-    // this for its own flow).
+    // position falls inside — preferring real GPS (userPosition) and only
+    // falling back to the hardcoded DEFAULT_CENTER if geolocation was
+    // denied/unavailable. This used to always use DEFAULT_CENTER
+    // regardless of the device's actual location, which is why this card
+    // could disagree with ReportBrownout.jsx's real-GPS-based pin.
     useEffect(() => {
         if (!geoData) return;
-        const barangay = getBarangayFromCoords(DEFAULT_CENTER[0], DEFAULT_CENTER[1], geoData);
+        const [lat, lng] = userPosition ? [userPosition.lat, userPosition.lng] : DEFAULT_CENTER;
+        const barangay = getBarangayFromCoords(lat, lng, geoData);
         setCurrentBarangay(barangay);
-    }, [geoData]);
+    }, [geoData, userPosition]);
 
     // 🆕 Fetch active emergencies
     useEffect(() => {
@@ -205,12 +227,23 @@ export default function RefugeMap() {
 
     const handleAddRefuge = async (entry) => {
         const { data: { user } } = await supabase.auth.getUser();
+
+        // Placeholder jitter around the barangay center until this is
+        // wired to the device's actual location (navigator.geolocation) or
+        // a real pin-drop UI — see project notes. Whatever the source of
+        // these coordinates ends up being, the barangay tag below is
+        // always derived from the *exact same* lat/lng being submitted, so
+        // LGU staff scoping (see the round-8 migration) stays correct even
+        // while the coordinates themselves are still fake.
+        const lat = DEFAULT_CENTER[0] + (Math.random() - 0.5) * 0.006;
+        const lng = DEFAULT_CENTER[1] + (Math.random() - 0.5) * 0.006;
+        const barangay = getBarangayFromCoords(lat, lng, geoData);
+
         const { error } = await supabase.from('refuge_points').insert({
             name: entry.name,
-            // Placeholder jitter around the barangay center until this is
-            // wired to the device's actual location (navigator.geolocation).
-            lat: DEFAULT_CENTER[0] + (Math.random() - 0.5) * 0.006,
-            lng: DEFAULT_CENTER[1] + (Math.random() - 0.5) * 0.006,
+            lat,
+            lng,
+            barangay,
             power: entry.power,
             services: entry.services,
             verified: false,

@@ -4,6 +4,7 @@ import RefugeMap from './features/RefugeMap';
 import AuthPage from './features/AuthPage';
 import ProfilePage from './features/ProfilePage';
 import AlertsPage from './features/AlertsPage';
+import Onboarding from './features/Onboarding';
 import GovConsole from './features/gov/GovConsole';
 import { ReportBrownout } from './features/ReportBrownout';
 import AppLayout from './layouts/AppLayout';
@@ -15,7 +16,12 @@ const TAB_VIEWS = ['map', 'alerts', 'profile'];
 export default function App() {
   const [currentView, setCurrentView] = useState('landing');
   const { session, loading } = useAuth();
-  const { isStaff, loading: staffLoading } = useIsStaff();
+  const { isStaff, staffBarangays, loading: staffLoading } = useIsStaff();
+
+  // Whether this user has ever completed the barangay-selection step.
+  // Stored in user_metadata (same place ProfilePage.jsx already reads
+  // barangay/purok from) rather than a new table.
+  const hasBarangay = !!session?.user?.user_metadata?.barangay;
 
   const handleGetStarted = () => {
     setCurrentView(session ? 'map' : 'auth');
@@ -25,10 +31,23 @@ export default function App() {
   // expired token), send them back to landing instead of leaving them
   // stuck on a screen that assumes they're logged in.
   useEffect(() => {
-    if (!loading && !session && (TAB_VIEWS.includes(currentView) || currentView === 'gov' || currentView === 'report')) {
+    if (!loading && !session && (TAB_VIEWS.includes(currentView) || currentView === 'gov' || currentView === 'report' || currentView === 'onboarding')) {
       setCurrentView('landing');
     }
   }, [session, loading, currentView]);
+
+  // Every signed-in user needs a barangay on file before they can reach
+  // any real screen — this is what makes "report an outage," "tag a power
+  // source," and the LGU console's scoping mean anything. Runs on every
+  // render where session/hasBarangay change, not just right after sign-in,
+  // so it also catches an existing account that never went through this
+  // step (e.g. one created before onboarding existed).
+  useEffect(() => {
+    if (loading || !session) return;
+    if (!hasBarangay && currentView !== 'onboarding') {
+      setCurrentView('onboarding');
+    }
+  }, [session, loading, hasBarangay, currentView]);
 
   // Listen for the custom event the map's FAB fires to launch the
   // full-screen brownout report flow.
@@ -57,11 +76,21 @@ export default function App() {
             onBack={() => setCurrentView('landing')}
           />
         );
+      case 'onboarding':
+        if (!session) {
+          setCurrentView('auth');
+          return null;
+        }
+        return <Onboarding onComplete={() => setCurrentView('map')} />;
       case 'map':
       case 'alerts':
       case 'profile':
         if (!session) {
           setCurrentView('auth');
+          return null;
+        }
+        if (!hasBarangay) {
+          setCurrentView('onboarding');
           return null;
         }
         return (
@@ -77,11 +106,19 @@ export default function App() {
           setCurrentView('auth');
           return null;
         }
+        if (!hasBarangay) {
+          setCurrentView('onboarding');
+          return null;
+        }
         return <ReportBrownout onBack={() => setCurrentView('map')} />;
 
       case 'gov':
         if (!session) {
           setCurrentView('auth');
+          return null;
+        }
+        if (!hasBarangay) {
+          setCurrentView('onboarding');
           return null;
         }
         // Wait for the staff check to resolve before deciding anything —
@@ -101,7 +138,7 @@ export default function App() {
           setCurrentView('map');
           return null;
         }
-        return <GovConsole onExit={() => setCurrentView('map')} />;
+        return <GovConsole onExit={() => setCurrentView('map')} staffBarangays={staffBarangays} />;
       default:
         return <LandingPage onGetStarted={handleGetStarted} />;
     }

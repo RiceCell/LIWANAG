@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { LayoutGrid, ShieldCheck, Flame, Megaphone, LogOut, RadioTower } from 'lucide-react';
+import { LayoutGrid, ShieldCheck, Flame, Megaphone, LogOut, RadioTower, ChevronDown } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../hooks/useAuth';
 import GovOverview from './GovOverview';
@@ -14,16 +14,30 @@ const TABS = [
     { key: 'broadcast', label: 'Broadcast', icon: Megaphone },
 ];
 
-// NOTE: this component assumes whoever reaches it is a barangay official.
-// There's no role check here yet — that has to land before this is ever
-// exposed to real users, since it surfaces every household's outage
-// activity and controls what gets broadcast barangay-wide. The plan is a
-// `role` claim in user_metadata (or a `staff` table) checked here AND
-// enforced with RLS on refuge_points/brownout_reports/broadcasts, so a
-// citizen account can never read this data even by hitting the API directly.
-export default function GovConsole({ onExit }) {
+// A row with no barangay predates the round-8 migration (or came from a
+// barangay lookup that failed to match anything). Rather than let those
+// rows vanish from every official's view, any staff member can see/act on
+// them alongside their own barangay's data — see the migration's comments
+// for the full reasoning. This is the client-side mirror of the `barangay
+// is null or is_staff_of(barangay)` clause in the refuge_points RLS policy.
+function belongsToActiveBarangay(row, activeBarangay) {
+    return row.barangay === activeBarangay || row.barangay == null;
+}
+
+// `staffBarangays` — the barangay(s) this signed-in user actually has a
+// barangay_staff row for (from useIsStaff(), resolved by App.jsx before
+// this component ever mounts — see the staffLoading gate there). Every
+// fetch, every realtime update, and every broadcast sent from this console
+// is scoped to `activeBarangay`, one of the entries in that list. There is
+// no "view all barangays" mode here on purpose — see the checklist's own
+// "no cross-barangay data access for barangay-level accounts" requirement.
+// A future LGU-level (multi-barangay aggregate) tier would be a genuinely
+// different screen, not an option bolted onto this one.
+export default function GovConsole({ onExit, staffBarangays = [] }) {
     const { session, signOut } = useAuth();
     const [tab, setTab] = useState('overview');
+    const [activeBarangay, setActiveBarangay] = useState(staffBarangays[0] ?? null);
+    const [barangayMenuOpen, setBarangayMenuOpen] = useState(false);
     const [refuges, setRefuges] = useState([]);
     const [reports, setReports] = useState([]);
     const [broadcasts, setBroadcasts] = useState([]);
@@ -32,15 +46,24 @@ export default function GovConsole({ onExit }) {
 
     useEffect(() => {
         let ignore = false;
+        if (!activeBarangay) {
+            // Shouldn't happen in practice — App.jsx only renders this
+            // component once isStaff is true, which implies at least one
+            // barangay_staff row exists. Guard anyway rather than firing
+            // off queries with a broken filter.
+            setLoading(false);
+            return;
+        }
         (async () => {
+            setLoading(true);
+            // `.or('barangay.eq.X,barangay.is.null')` mirrors the RLS escape
+            // hatch for legacy/unscoped rows — see belongsToActiveBarangay()
+            // above and the migration's comments.
+            const scopeFilter = `barangay.eq.${activeBarangay},barangay.is.null`;
             const [refugeRes, reportRes, broadcastRes] = await Promise.all([
-                supabase.from('refuge_points').select('*').order('created_at', { ascending: false }),
-                // Reads from `brownout_reports` now (structured purok + real GPS,
-                // written by the citizen ReportBrownout flow) instead of the
-                // legacy `outage_reports` (free-text street, no longer written
-                // to by anything in the app — see purokUtils.js for context).
-                supabase.from('brownout_reports').select('*').order('created_at', { ascending: false }).limit(200),
-                supabase.from('broadcasts').select('*').order('created_at', { ascending: false }).limit(50),
+                supabase.from('refuge_points').select('*').or(scopeFilter).order('created_at', { ascending: false }),
+                supabase.from('brownout_reports').select('*').or(scopeFilter).order('created_at', { ascending: false }).limit(200),
+                supabase.from('broadcasts').select('*').or(scopeFilter).order('created_at', { ascending: false }).limit(50),
             ]);
             if (ignore) return;
 
@@ -53,14 +76,23 @@ export default function GovConsole({ onExit }) {
             setLoading(false);
         })();
         return () => { ignore = true; };
-    }, []);
+    }, [activeBarangay]);
 
     // Live updates so two officials working the queue at the same time, or a
     // citizen submitting a report mid-review, don't require a page refresh.
+    // Realtime's `filter` option only supports simple `column=eq.value`
+    // matches, not the eq-or-null combo the initial fetch above uses, so
+    // instead this subscribes to everything on each table and filters in
+    // the callback via belongsToActiveBarangay() — same scoping rule,
+    // applied client-side instead of server-side for this one case.
     useEffect(() => {
+        if (!activeBarangay) return;
+
         const channel = supabase
             .channel('gov_console_changes')
             .on('postgres_changes', { event: '*', schema: 'public', table: 'refuge_points' }, (payload) => {
+                const row = payload.new ?? payload.old;
+                if (!belongsToActiveBarangay(row, activeBarangay)) return;
                 setRefuges((prev) => {
                     if (payload.eventType === 'INSERT') return [payload.new, ...prev];
                     if (payload.eventType === 'UPDATE') return prev.map((r) => (r.id === payload.new.id ? payload.new : r));
@@ -69,12 +101,13 @@ export default function GovConsole({ onExit }) {
                 });
             })
             .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'brownout_reports' }, (payload) => {
+                if (!belongsToActiveBarangay(payload.new, activeBarangay)) return;
                 setReports((prev) => [payload.new, ...prev]);
             })
             .subscribe();
 
         return () => { supabase.removeChannel(channel); };
-    }, []);
+    }, [activeBarangay]);
 
     const pending = useMemo(() => refuges.filter((r) => !r.verified), [refuges]);
     const verified = useMemo(() => refuges.filter((r) => r.verified), [refuges]);
@@ -93,7 +126,12 @@ export default function GovConsole({ onExit }) {
         const { data: { user } } = await supabase.auth.getUser();
         const { data, error } = await supabase
             .from('broadcasts')
-            .insert({ message, target_puroks: puroks, created_by: user?.id ?? null })
+            .insert({
+                message,
+                target_puroks: puroks,
+                barangay: activeBarangay, // required by RLS — see is_staff_of() in the round-8 migration
+                created_by: user?.id ?? null,
+            })
             .select()
             .single();
         if (error) throw error;
@@ -134,7 +172,40 @@ export default function GovConsole({ onExit }) {
 
                 <div className="border-t border-slate-100 pt-4 mt-4 px-2">
                     <p className="text-xs font-bold text-slate-700 truncate">{session?.user?.email}</p>
-                    <p className="text-[11px] text-slate-400 mb-3">Barangay San Isidro</p>
+
+                    {/* Shows the barangay this official is actually scoped to,
+                        pulled from their real barangay_staff row(s) — no more
+                        hardcoded "Barangay San Isidro" regardless of who's
+                        signed in. Staff of more than one barangay get a
+                        switcher instead of a static label. */}
+                    {staffBarangays.length > 1 ? (
+                        <div className="relative mb-3">
+                            <button
+                                onClick={() => setBarangayMenuOpen((v) => !v)}
+                                className="w-full flex items-center justify-between gap-1 text-[11px] text-slate-500 font-semibold bg-slate-50 border border-slate-100 rounded-lg px-2 py-1.5"
+                            >
+                                <span className="truncate">{activeBarangay}</span>
+                                <ChevronDown size={12} className="shrink-0" />
+                            </button>
+                            {barangayMenuOpen && (
+                                <div className="absolute left-0 right-0 mt-1 bg-white border border-slate-100 rounded-lg shadow-lg z-10 overflow-hidden">
+                                    {staffBarangays.map((b) => (
+                                        <button
+                                            key={b}
+                                            onClick={() => { setActiveBarangay(b); setBarangayMenuOpen(false); }}
+                                            className={`w-full text-left text-[11px] px-2.5 py-2 font-semibold ${b === activeBarangay ? 'text-brand-500 bg-brand-50' : 'text-slate-600 hover:bg-slate-50'
+                                                }`}
+                                        >
+                                            {b}
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    ) : (
+                        <p className="text-[11px] text-slate-400 mb-3">{activeBarangay || 'No barangay assigned'}</p>
+                    )}
+
                     {onExit && (
                         <button
                             onClick={onExit}
